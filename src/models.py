@@ -50,11 +50,11 @@ class CARU(nn.Module):
     def __init__(self, input_shape):
         super(CARU, self).__init__()
         self.b, self.c, self.w, self.h = input_shape
+
         self.W_1_s = nn.Parameter(torch.rand(self.b, 64, 1, requires_grad=True)) # [PAPER] 64 is arbitrary: no info about dimensionality
         self.W_2_s = nn.Parameter(torch.rand(self.b, 1, 64, requires_grad=True))
         self.W_c = nn.Parameter(torch.rand(self.b, 1, 1, requires_grad=True))
         self.W_d = nn.Parameter(torch.rand(self.b,1, 2, requires_grad=True))
-
 
     def reset_gate(self, Xn, Gn_1):
         gx = torch.cat([Gn_1,Xn], dim=1).reshape(self.b, 2, -1)
@@ -65,27 +65,31 @@ class CARU(nn.Module):
 
     def update_gate(self, Xn, Gn_1):
 
+        # Xn: Current image feature map
+        # Gn_1: group representation of all the images been explored
         Zn = Gn_1 - Xn
 
         # Spatial attention model
         relu = nn.ReLU()
-        cross_channel_avgpool = nn.AvgPool3d((self.c, 1, 1))
+        cross_channel_avgpool = nn.AvgPool3d((self.c, 1, 1)) # global crosschannel average pooling
         Zhwn = cross_channel_avgpool(Zn).reshape(self.b, 1, -1)
+
+
         res = relu(torch.bmm(self.W_1_s, Zhwn))
         Zs = torch.bmm(self.W_2_s, res).reshape(self.b, 1, self.w, self.h)
 
         # Channel attention model
-        cross_spatial_avgpool = nn.AvgPool3d((1, self.w, self.h))
+        cross_spatial_avgpool = nn.AvgPool3d((1, self.w, self.h)) # global spatial space average pooling layer
         Zcn = cross_spatial_avgpool(Zn).reshape(self.b, self.c, 1)
         Zc = torch.bmm(Zcn, self.W_c).reshape(self.b, self.c, 1, 1)
-
         Z = torch.sigmoid(Zs * Zc)
-
         return Z
 
 
     def forward(self, Xn, Gn_1):
         Z = self.update_gate(Xn, Gn_1)
+        # When the probability value -> new useful synergetic information in X_tilde_n
+        # should be updated to Gn
         X_tilde_n = self.reset_gate(Xn, Gn_1)
         Gn = Z * Gn_1 + (1-Z) * X_tilde_n
         return Gn
@@ -166,7 +170,6 @@ class Model(nn.Module):
         self.caru = CARU(self.Xn_shape)
         self.mff = MFF(self.input_shape)
 
-
     def cuda(self):
         # Dunno if I call cuda on the module automatically triggers all the childs
         # I put it anyway
@@ -179,9 +182,7 @@ class Model(nn.Module):
 
         return self
 
-
     def forward(self, I):
-
         Sns = []
         for i, im in enumerate(I):
             Xn = self.vgg19(im)

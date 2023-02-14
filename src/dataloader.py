@@ -4,10 +4,14 @@ __all__ = ['Coseg']
 
 # Cell
 import os
+from xml import etree
+
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms as T
 import matplotlib.pyplot as plt
 from PIL import Image
+import xml.etree.ElementTree as ET
+import cv2
 
 # Cell
 
@@ -18,9 +22,8 @@ class Coseg(Dataset):
         transform (callable, optional): Optional transform to be applied on a sample.
     """
 
-    def __init__(self, img_set='images/', gt_set='ground_truth/', root_dir="data/042_reproducible/",
+    def __init__(self, img_set='images/', gt_set='ground_truth/', root_dir="data/042_reproducible/", 
                  transform=T.Compose([T.Resize((224,224)), T.ToTensor()])):
-
         self.root_dir = root_dir
         self.img_set = img_set
         self.gt_set = gt_set
@@ -34,9 +37,140 @@ class Coseg(Dataset):
     def __getitem__(self, idx):
         img = Image.open(self.root_dir + self.img_set + self.imgs[idx])
         gt = Image.open(self.root_dir + self.gt_set + self.imgs[idx][:-3] + 'png')
-
         if self.transform:
             img = self.transform(img)
             gt = self.transform(gt)
 
         return img, gt
+
+
+class PASCAL2012(Dataset):
+    """
+    Annotations -> xml
+    """
+    root = "cmy/dataset/PACAL_VOC_2012/VOCdevkit/VOC2012"
+    cls = ["aeroplane", "bicycle", "bird"]
+    def __init__(self, img_set='SegmentationClass/', gt_set='JPEGImages/', root_dir='dataset/PASCAL_VOC_2012/VOCdevkit/', txt_name: str="train.txt",
+                 transforms=T.Compose([T.Resize((224,224)), T.ToTensor()])):
+
+        self.root_dir = root_dir
+        self.img_set = img_set
+        self.gt_set = gt_set
+        # Label file
+        self.annotations_root = os.path.join(self.root_dir, "Annotations")
+        #self.img_root = os.path.join(self.root_dir, "JPEGImage")
+        self.transforms = transforms
+        # Segmentation
+        txt_path = os.path.join(self.root_dir, "ImageSets", "Segmentation", txt_name) # train.txt
+        # print(txt_path)
+        # /root/autodl-tmp/cmy/dataset/PASCAL_VOC_2012/VOCdevkit/VOC2012/ImageSets/Segmentation/train.txt
+        assert os.path.exists(txt_path), "Not found {} file.".format(txt_name)
+
+        # Load the xml file into the list
+        with open(txt_path) as xr:
+            self.xml_list = [os.path.join(self.annotations_root, line.strip() + ".xml")
+                             for line in xr.readlines()]
+
+        self.s_xml_list = list()
+        # Get the segmentation file list
+        for x in self.xml_list:
+            ret = self.is_segm(x)
+            # This image can be used for segmentation
+            if ret is not False:
+                self.s_xml_list.append(ret)
+                # Classify them
+
+
+            else:
+                continue
+        # print(self.s_xml_list)
+
+        # img_path: /root/autodl-tmp/cmy/dataset/PASCAL_VOC_2012/VOCdevkit/VOC2012/SegmentationClass/
+        img_path = self.root_dir + self.img_set
+        assert os.path.exists(img_path), "Not found {} Image Set.".format(txt_name)
+
+        self.s_imgs = [x for x in os.listdir(img_path) if (x[-3:] == 'png') or (x[-3:] == 'jpg')]
+        self.imgs = [x for x in os.listdir(img_path) if (x[-3:]=='png') or (x[-3:]=='jpg')]
+        # print(self.imgs)
+
+
+
+    def __len__(self):
+        return len(self.imgs)
+
+    def xml_to_dict(self, xml_str):
+        if len(xml_str) == 0:
+            return {xml_str.tag: xml_str.text}
+        
+        result = {}
+        for ch in xml_str:
+            ch_result = self.xml_to_dict(ch) 
+            if ch.tag != 'object':
+                result[ch.tag] = ch_result[ch.tag]
+            else: # object list
+                if ch.tag not in result:
+                    result[ch.tag] = []
+                result[ch.tag].append(ch_result[ch.tag])
+
+        return {xml_str.tag: result}
+
+    def is_segm(self, xml_path):
+        x = ET.parse(xml_path)
+        s = x.find("segmented").text
+
+        if int(s) != 0:
+            return xml_path
+
+        return False
+
+    def __getitem__(self, idx):
+
+        # Read the xml
+        xml_path = self.s_xml_list[idx]
+
+        with open(xml_path) as f:
+            xml_str = f.read()
+
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        boxes = []
+        labels = []
+
+        # C: <segmented>0</segmented> 该图片不用于做语义分割
+        # Get the image name
+        file_name = tree.find("filename")
+
+        # Get the image
+        img_path = os.path.join(self.root_dir+self.img_set, file_name.text[:-3] + 'png')
+        print("img_path: " + img_path)
+        image = Image.open(img_path)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        gt_path = os.path.join(self.root_dir+self.gt_set, file_name.text[:-3] + 'jpg')
+        print("gt_path: " + gt_path)
+        gt = Image.open(gt_path)
+        if gt.mode != 'RGB':
+            gt = gt.convert('RGB')
+
+        # Find all the object
+        obj_data = tree.findall("object")
+
+        # Parse all the object
+        # TODO: Multiple object
+        for obj in obj_data:
+            bbox = obj.find("bndbox")
+            xmin = float(bbox.find('xmin').text)
+            xmax = float(bbox.find('xmax').text)
+            ymin = float(bbox.find('ymin').text)
+            ymax = float(bbox.find('ymax').text)
+            boxes.append((xmin, xmax, ymin, ymax))
+
+            label_dict = {obj: obj.find("name").text}
+            labels.append(label_dict)
+
+        if self.transforms is not None:
+            image = self.transforms(image)
+            gt = self.transforms(gt)
+
+        return image, gt

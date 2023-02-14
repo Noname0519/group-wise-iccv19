@@ -3,7 +3,7 @@ Python: 3.6.9
 Author: lakj
 Charset: UTF-8
 """
-from src.dataloader import Coseg
+from src.dataloader import Coseg, PASCAL2012
 from src.models import Model
 import src.utils as utils
 from torch.nn.functional import softplus
@@ -49,7 +49,6 @@ def Ls(GTn:torch.tensor, Mn:torch.tensor) -> torch.tensor:
     """
     return (-(GTn * torch.log(Mn+1e-15) + (1- GTn) * torch.log((1- Mn)+1e-15))).sum()
 
-
 def Lc(i:int, imgs:list, masks:list, features:list, phi:models) -> torch.tensor:
     """ Triplet loss group wise constraint Equation (14)
     """
@@ -72,12 +71,12 @@ def main():
 
     # Params
     DEVICE = 'cuda'
-    GROUP_SIZE = 6
-    EPOCHS = 800
+    GROUP_SIZE = 2000
+    EPOCHS = 50
     TBOARD = False # If you have tensorboard running set it to true
 
-
     # Load data
+    '''
     coseg = Coseg(img_set='images/', gt_set='ground_truth/', root_dir="data/042_reproducible/",)
     trloader = DataLoader(coseg, batch_size=1, shuffle=False, num_workers=1)
     imgs = []
@@ -91,7 +90,29 @@ def main():
             imgs.append(In)
             GTs.append(GTn)
     print("[ OK ] Data loaded")
+    '''
 
+    # root_dir
+    PATH = "/root/autodl-tmp/cmy/dataset/PASCAL_VOC_2012/VOCdevkit/VOC2012/"
+    # Load data from PASCAL VOC2012
+    voc = PASCAL2012(img_set='SegmentationClass/', gt_set='JPEGImages/', root_dir=PATH)
+    voc_loader = DataLoader(voc, batch_size=40, shuffle=False, num_workers=2)
+
+    imgs = []
+    GTs = []
+    print(list(enumerate(voc_loader)))
+    for i, (In, GTn) in enumerate(voc_loader):
+        if i == GROUP_SIZE:
+            break
+        else:
+            In = In.to(DEVICE) # copy this variable to GPU
+            GTn = GTn.to(DEVICE)
+            imgs.append(In)
+            GTs.append(GTn)
+
+    print("[ OK ] Data loaded")
+    print(len(GTs))
+    print(len(imgs))
 
     # Precompute features
     vgg19_original = models.vgg19()
@@ -102,25 +123,24 @@ def main():
     features = precompute_features(imgs, GTs, phi)
     print("[ OK ] Feature precomputed")
 
-
     # Instantiate the model
     if DEVICE == 'cuda':
-        groupnet = Model((1,3, 224, 224)).cuda()
+        groupnet = Model((1, 3, 224, 224)).cuda()
     else:
-        groupnet = Model((1,3, 224, 224))
+        groupnet = Model((1, 3, 224, 224))
     print("[ OK ] Model instantiated")
 
 
     # Optimizer
     # [ PAPER ] suggests SGD with these parametes, but desn't work
-    #optimizer = optim.SGD(groupnet.parameters(), momentum=0.99,lr=0.00005, weight_decay=0.0005)
-    optimizer = optim.Adam(groupnet.parameters(), lr=0.00002)
-
+    optimizer = optim.SGD(groupnet.parameters(), momentum=0.99,lr=0.00005, weight_decay=0.0005)
+    # optimizer = optim.Adam(groupnet.parameters(), lr=0.00002)
 
     # Train Loop
     losses = []
     if TBOARD:
         writer = SummaryWriter()
+
     for epoch in range(EPOCHS):
         
         optimizer.zero_grad()
@@ -149,12 +169,12 @@ def main():
         if TBOARD:
             writer.add_scalar("loss", loss.item(), epoch)
             utils.tboard_imlist(masks, "masks", epoch, writer)
+
         losses.append(loss.item())
         print(f'[ ep {epoch} ] - Loss: {loss.item():.4f}')
 
     if TBOARD:
         writer.close()
-
 
     # Plot results in the same folder 
     fig, axs = plt.subplots(nrows=3, ncols=GROUP_SIZE, figsize=(10,5))
@@ -168,9 +188,9 @@ def main():
     plt.savefig("predictions.png")
     plt.close()
 
-
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(10,5))
     ax.plot(losses)
+
     if epoch>100:
         ax.axvline(100, c='r', ls='--', label="Activate Lc loss")
     ax.set_xlabel("Epoch")
